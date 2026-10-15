@@ -1,5 +1,6 @@
 package com.loopers.application.product;
 
+import com.loopers.application.brand.BrandInfo;
 import com.loopers.application.user.UserResolutionException;
 import com.loopers.domain.brand.Brand;
 import com.loopers.domain.brand.BrandRepository;
@@ -14,11 +15,15 @@ import com.loopers.utils.DatabaseCleanUp;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -88,6 +93,76 @@ class ProductQueryServiceIntegrationTest {
         jdbc.update("DELETE FROM `like`");
         assertThat(queryService.getList(null, 0, 20, ProductSort.LIKES_DESC).items())
             .extracting(ProductInfo::productId).containsExactly(tie.getId(), high.getId(), low.getId());
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = ProductSort.class, names = {"LATEST", "PRICE_ASC"})
+    void preservesTiedProductsAndExactLikeCountsAcrossTheLastAndOutOfRangePages(ProductSort sort) {
+        Brand pageBrand = brands.save(new Brand("페이지 경계 브랜드"));
+        List<Product> candidates = createTiedProducts(pageBrand);
+        List<ProductInfo> expected = new ArrayList<>();
+        LocalDateTime timestamp = LocalDateTime.of(2026, 1, 2, 0, 0);
+        for (int i = 0; i < candidates.size(); i++) {
+            Product product = candidates.get(i);
+            int likeCount = i % 3;
+            for (int userId = 1; userId <= likeCount; userId++) {
+                addLike(userId, product.getId(), timestamp);
+            }
+            expected.add(new ProductInfo(product.getId(), product.getName(), product.getPrice(),
+                product.getStockQuantity(), new BrandInfo(pageBrand.getId(), pageBrand.getName()), likeCount));
+        }
+        Collections.reverse(expected);
+
+        var first = queryService.getList(pageBrand.getId(), 0, 20, sort);
+        var last = queryService.getList(pageBrand.getId(), 1, 20, sort);
+        var outOfRange = queryService.getList(pageBrand.getId(), 2, 20, sort);
+
+        assertThat(first.items()).containsExactlyElementsOf(expected.subList(0, 20));
+        assertThat(last.items()).containsExactlyElementsOf(expected.subList(20, 25));
+        assertThat(outOfRange.items()).isEmpty();
+        assertThat(first.page()).isZero();
+        assertThat(last.page()).isEqualTo(1);
+        assertThat(outOfRange.page()).isEqualTo(2);
+        for (var page : List.of(first, last, outOfRange)) {
+            assertThat(page.size()).isEqualTo(20);
+            assertThat(page.totalElements()).isEqualTo(25);
+            assertThat(page.totalPages()).isEqualTo(2);
+        }
+        List<ProductInfo> traversed = new ArrayList<>(first.items());
+        traversed.addAll(last.items());
+        assertThat(traversed).containsExactlyElementsOf(expected);
+        assertThat(traversed).extracting(ProductInfo::productId).doesNotHaveDuplicates();
+        assertThat(traversed).filteredOn(product -> product.likeCount() == 0).hasSize(9);
+        assertThat(last.items().getLast().stockQuantity()).isZero();
+    }
+
+    @Test
+    void ranksAnOlderPopularProductBeforePagingTheWholeCandidateSet() {
+        Brand pageBrand = brands.save(new Brand("전체 인기순 브랜드"));
+        List<Product> candidates = createTiedProducts(pageBrand);
+        Product oldest = candidates.getFirst();
+        LocalDateTime timestamp = LocalDateTime.of(2026, 1, 2, 0, 0);
+        addLike(1, oldest.getId(), timestamp);
+        addLike(2, oldest.getId(), timestamp);
+        List<Long> expectedIds = new ArrayList<>(candidates.stream().map(Product::getId).toList());
+        Collections.reverse(expectedIds);
+        expectedIds.remove(oldest.getId());
+        expectedIds.addFirst(oldest.getId());
+
+        var first = queryService.getList(pageBrand.getId(), 0, 20, ProductSort.LIKES_DESC);
+        var last = queryService.getList(pageBrand.getId(), 1, 20, ProductSort.LIKES_DESC);
+
+        assertThat(first.items()).extracting(ProductInfo::productId)
+            .containsExactlyElementsOf(expectedIds.subList(0, 20));
+        assertThat(last.items()).extracting(ProductInfo::productId)
+            .containsExactlyElementsOf(expectedIds.subList(20, 25));
+        assertThat(first.items().getFirst().likeCount()).isEqualTo(2);
+        assertThat(first.items().subList(1, 20)).allSatisfy(product -> assertThat(product.likeCount()).isZero());
+        assertThat(last.items()).allSatisfy(product -> assertThat(product.likeCount()).isZero());
+        for (var page : List.of(first, last)) {
+            assertThat(page.totalElements()).isEqualTo(25);
+            assertThat(page.totalPages()).isEqualTo(2);
+        }
     }
 
     @Test
@@ -170,5 +245,16 @@ class ProductQueryServiceIntegrationTest {
 
     private void addLike(long userId, long productId, LocalDateTime timestamp) {
         jdbc.update("INSERT INTO `like` (user_id, product_id, created_at) VALUES (?, ?, ?)", userId, productId, timestamp);
+    }
+
+    private List<Product> createTiedProducts(Brand pageBrand) {
+        List<Product> candidates = new ArrayList<>();
+        for (int i = 0; i < 25; i++) {
+            candidates.add(products.save(new Product(pageBrand, "동률 상품 " + i, 1000, i)));
+        }
+        LocalDateTime timestamp = LocalDateTime.of(2026, 1, 2, 0, 0);
+        jdbc.update("UPDATE product SET created_at = ?, updated_at = ? WHERE brand_id = ?",
+            timestamp, timestamp, pageBrand.getId());
+        return candidates;
     }
 }

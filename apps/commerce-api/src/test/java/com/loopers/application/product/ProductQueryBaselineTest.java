@@ -40,10 +40,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -53,7 +56,7 @@ import java.util.stream.IntStream;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.doAnswer;
 
-/** 기존 API와 수동 DDL을 사용하는, 캐시 없는 W4 개선 전 측정이다. */
+/** 기존 API와 수동 DDL을 사용하는 캐시 없는 W4 전후 비교 측정이다. */
 @SpringBootTest(classes = CommerceApiApplication.class,
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
     properties = {"spring.jpa.hibernate.ddl-auto=none", "spring.jpa.show-sql=false"})
@@ -66,6 +69,8 @@ class ProductQueryBaselineTest {
     private static final String REQUEST = "/api/v1/products?brandId=1007&sort=price_asc&page=0&size=20";
     private static final int WARMUPS = 5;
     private static final int SAMPLES = 20;
+    private static final String INDEX_ADDITION = "007-product-brand-price-index.sql";
+    private static final boolean COMPARE_INDEX = Boolean.parseBoolean(System.getenv("W4_COMPARE_BRAND_PRICE_INDEX"));
     private static final List<String> SCHEMA = List.of("001-brand.sql", "002-user.sql", "003-product.sql",
         "004-like.sql", "005-order.sql", "006-order-item.sql");
 
@@ -96,6 +101,9 @@ class ProductQueryBaselineTest {
         if (!schemaApplied) {
             ResourceDatabasePopulator schema = new ResourceDatabasePopulator();
             SCHEMA.forEach(file -> schema.addScript(new ClassPathResource("db/schema/" + file)));
+            if (!COMPARE_INDEX) {
+                schema.addScript(new ClassPathResource("db/schema/" + INDEX_ADDITION));
+            }
             schema.execute(new DriverManagerDataSource(MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword()));
             schemaApplied = true;
         }
@@ -129,6 +137,32 @@ class ProductQueryBaselineTest {
     void measuresExistingHttpQueryAgainstManualIndexesAndDeterministicTenThousandProducts() throws IOException {
         assertOwnedSchemaAndSeed();
         assertExistingContracts();
+        String label = System.getenv().getOrDefault("W4_QUERY_LABEL", "current");
+        assertThat(label).matches("[a-z0-9-]+");
+        if (COMPARE_INDEX) {
+            // 이 테스트가 소유한 빈 DB에만 후보 인덱스를 추가/제거한다. 공유 DB에는 연결하지 않는다.
+            for (int round = 1; round <= 2; round++) {
+                measure(label + "-existing-r" + round);
+                new ResourceDatabasePopulator(new ClassPathResource("db/schema/" + INDEX_ADDITION)).execute(dataSource);
+                try {
+                    analyzeProducts();
+                    measure(label + "-candidate-r" + round);
+                } finally {
+                    jdbc.execute("DROP INDEX idx_product_brand_price ON product");
+                    analyzeProducts();
+                }
+            }
+        } else {
+            measure(label);
+        }
+    }
+
+    private void analyzeProducts() {
+        assertThat(jdbc.queryForList("ANALYZE TABLE product"))
+            .allSatisfy(row -> assertThat(row.get("Msg_text")).isEqualTo("OK"));
+    }
+
+    private void measure(String label) throws IOException {
         JsonNode expected = expectedPage(1007, "price_asc", 0, 20);
         assertThat(expected.path("items").findValuesAsText("productId")).containsExactly(
             "109407", "108407", "107407", "106407", "105407", "103407", "102407", "101407", "100407",
@@ -174,7 +208,7 @@ class ProductQueryBaselineTest {
                 "explain", jdbc.queryForList("EXPLAIN " + query.sql(), query.parameters().toArray()),
                 "explainAnalyze", jdbc.queryForList("EXPLAIN ANALYZE " + query.sql(), query.parameters().toArray())));
         }
-        writeReport(elapsedNanos, sqlCounts, responseBody, plans);
+        writeReport(label, elapsedNanos, sqlCounts, responseBody, plans);
     }
 
     private void assertOwnedSchemaAndSeed() {
@@ -204,6 +238,9 @@ class ProductQueryBaselineTest {
         assertIndex("product", "idx_product_brand_deleted", "brand_id", "deleted_at");
         assertIndex("product", "idx_product_latest", "deleted_at", "created_at", "id");
         assertIndex("product", "idx_product_price", "deleted_at", "price", "id");
+        if (!COMPARE_INDEX) {
+            assertIndex("product", "idx_product_brand_price", "brand_id", "deleted_at", "price", "id");
+        }
         assertIndex("like", "idx_like_product", "product_id");
     }
 
@@ -216,11 +253,28 @@ class ProductQueryBaselineTest {
 
     private void assertExistingContracts() {
         for (String sort : List.of("latest", "price_asc", "likes_desc")) {
-            for (int page : List.of(0, 1, 5)) {
+            for (int page : List.of(0, 1, 2, 3, 4, 5)) {
                 String path = "/api/v1/products?brandId=1007&sort=" + sort + "&page=" + page + "&size=20";
                 assertResponse(http.getForEntity(path, JsonNode.class), expectedPage(1007, sort, page, 20));
             }
+            assertResponse(http.getForEntity("/api/v1/products?sort=" + sort, JsonNode.class),
+                expectedPage(null, sort, 0, 20));
         }
+        // 요청당 SQL 수가 페이지 품목 수에 비례해 늘지 않는지 검사한다. 특정 개수나 시간은 강제하지 않는다.
+        List<Integer> queryCounts = new ArrayList<>();
+        for (int size : List.of(1, 20, 100)) {
+            probe.start();
+            List<JdbcReadProbe.Query> queries;
+            try {
+                String path = "/api/v1/products?brandId=1007&sort=price_asc&page=0&size=" + size;
+                assertResponse(http.getForEntity(path, JsonNode.class), expectedPage(1007, "price_asc", 0, size));
+            } finally {
+                queries = probe.stop();
+            }
+            assertThat(queries).isNotEmpty();
+            queryCounts.add(queries.size());
+        }
+        assertThat(queryCounts).containsOnly(queryCounts.getFirst());
         assertResponse(http.getForEntity("/api/v1/products?brandId=1100&sort=price_asc", JsonNode.class),
             expectedPage(1100, "price_asc", 0, 20));
         for (long hiddenId : List.of(100100L, 100113L)) {
@@ -245,15 +299,15 @@ class ProductQueryBaselineTest {
         assertThat(query.parameters()).doesNotContainNull();
     }
 
-    private JsonNode expectedPage(int brandId, String sort, int page, int size) {
+    private JsonNode expectedPage(Integer brandId, String sort, int page, int size) {
         Comparator<Integer> ordering = switch (sort) {
             case "price_asc" -> Comparator.comparingInt(ProductQueryBaselineTest::price);
             case "likes_desc" -> Comparator.comparingInt(ProductQueryBaselineTest::likes).reversed();
             default -> Comparator.<Integer>comparingInt(index -> index % 1000).reversed();
         };
         List<Integer> matching = IntStream.rangeClosed(1, 10000)
-            .filter(index -> 1001 + (index - 1) % 100 == brandId)
-            .filter(index -> brandId != 1100 && index % 113 != 0)
+            .filter(index -> brandId == null || 1001 + (index - 1) % 100 == brandId)
+            .filter(index -> 1001 + (index - 1) % 100 != 1100 && index % 113 != 0)
             .boxed().sorted(ordering.thenComparing(Comparator.reverseOrder())).toList();
         ObjectNode expected = mapper.createObjectNode();
         ArrayNode items = expected.putArray("items");
@@ -264,8 +318,9 @@ class ProductQueryBaselineTest {
             item.put("price", price(index));
             item.put("stockQuantity", index % 17 == 0 ? 0 : 1 + index % 50);
             ObjectNode brand = item.putObject("brand");
-            brand.put("brandId", brandId);
-            brand.put("name", "W4 brand %03d".formatted(brandId - 1000));
+            int actualBrandId = 1001 + (index - 1) % 100;
+            brand.put("brandId", actualBrandId);
+            brand.put("name", "W4 brand %03d".formatted(actualBrandId - 1000));
             item.put("likeCount", likes(index));
         });
         expected.put("page", page);
@@ -283,16 +338,23 @@ class ProductQueryBaselineTest {
         return index % 997 == 0 ? 200 : ((index - 1) / 100 + index) % 10;
     }
 
-    private void writeReport(List<Long> elapsedNanos, List<Integer> sqlCounts, JsonNode response,
+    private void writeReport(String label, List<Long> elapsedNanos, List<Integer> sqlCounts, JsonNode response,
                              List<Map<String, Object>> plans) throws IOException {
         List<Long> sorted = elapsedNanos.stream().sorted().toList();
         Map<String, Object> report = new LinkedHashMap<>();
         report.put("measuredAt", Instant.now().toString());
-        report.put("stage", "DB-only baseline; no optimization or cache effectiveness claimed");
+        report.put("stage", label + "; actual DB-only HTTP path, no cache");
+        report.put("sourceSha256", sha256(Path.of("src/main/java/com/loopers/infrastructure/product/ProductQueryRepositoryImpl.java")));
+        report.put("seedSha256", sha256(Path.of("src/test/resources", SEED)));
         report.put("javaVersion", System.getProperty("java.version"));
         report.put("mysqlVersion", jdbc.queryForObject("SELECT VERSION()", String.class));
         report.put("seed", SEED + " (v1)");
-        report.put("schemaScripts", SCHEMA);
+        List<String> appliedScripts = new ArrayList<>(SCHEMA);
+        if (!COMPARE_INDEX || label.contains("-candidate-")) {
+            appliedScripts.add(INDEX_ADDITION);
+        }
+        report.put("schemaScripts", appliedScripts);
+        report.put("sessionIsolation", jdbc.queryForObject("SELECT @@SESSION.transaction_isolation", String.class));
         report.put("preparation", "Manual DDL, seed v1, ANALYZE TABLE brand/product/like/user, contract checks, warmups");
         report.put("seedStatistics", Map.of("brands", 100, "products", 10000, "likes", 46955,
             "visibleProducts", 9812, "deletedProducts", 188, "zeroLikeProducts", 999,
@@ -318,9 +380,17 @@ class ProductQueryBaselineTest {
             "JDBC executeNanos excludes subsequent ResultSet consumption; it is not complete query cost",
             "Nearest-rank percentiles from 20 samples; no fixed speedup or latency pass threshold",
             "Dedicated Redis is only application infrastructure here; this does not test cache hit/miss"));
-        Path destination = Path.of("build", "reports", "week4", "product-query-baseline.json");
+        Path destination = Path.of("build", "reports", "week4", "product-query-" + label + ".json");
         Files.createDirectories(destination.getParent());
         mapper.writerWithDefaultPrettyPrinter().writeValue(destination.toFile(), report);
+    }
+
+    private static String sha256(Path path) throws IOException {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(path)));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException(exception);
+        }
     }
 
     private static long percentile(List<Long> sorted, double percentile) {

@@ -34,6 +34,14 @@ W2 구현은 고객 12개·관리자 13개의 **25개 API를 JPA/MySQL까지 연
 
 측정 구성·실행 방법·결과는 [상품 조회 기준선 기록](../week4/product-query-baseline.md), 테스트 기대값은 [W4 기준선 TDD 계획](commerce-tdd-plan.md#w4-상품-조회-기준선-tdd)을 따른다. Redis와 캐시 변경 책임은 정책 선택 후 이 전체 설계의 버드뷰·계층·대표 흐름에 확장한다.
 
+### 후속 1단계: SQL·인덱스 개선 완료
+
+2026-10-15에는 회귀 테스트를 먼저 보강한 뒤 고객 `latest`·`price_asc` 목록의 전체 좋아요 join/group을 projection의 상관 count로 바꾸었다. 브랜드·상품 노출 조건과 정렬·페이지·응답은 유지하며, `likes_desc`·관리자·내 좋아요·상세는 기존 경로를 유지한다. Controller·application·domain의 책임과 세 대표 흐름은 변하지 않는다.
+
+브랜드·가격순 복합 인덱스는 기존 DDL을 교체하지 않고 [007 추가 SQL](../../apps/commerce-api/src/main/resources/db/schema/007-product-brand-price-index.sql)로 제공한다. 같은 10,000개 seed의 고정 브랜드·가격순 첫 페이지에서 목록 상품 읽기 99→20행, 좋아요 lookup 99→20 loops, 임시 집계·별도 정렬 제거를 확인했다. 전체 개수 쿼리는 유지해 요청 SQL 수는 2회 그대로다. 인덱스만 추가했을 때는 기존 계획을 개선하지 못했다.
+
+기존 읽기 트랜잭션과 변경 경로의 READ_COMMITTED·비관적 잠금은 유지한다. Redis·로컬 캐시는 아직 추가하지 않았다. 최종 전체 **559개 테스트·Checkstyle·ArchUnit 통과**, 정확한 전후 증거·TDD 과정·인덱스 쓰기 비용·측정 한계는 [개선 기록](../week4/product-query-optimization.md)에서 관리한다.
+
 ## W3 브랜드·상품 일괄 논리 삭제
 
 출처는 사용자가 제공한 W3 「Implementation Quest」의 브랜드 일괄 처리 요구와 후속 설계 대화다. 기존 P00의 논리 삭제를 유지하고, 사용자가 선택한 **비관적 잠금·단일 트랜잭션**을 적용한다.

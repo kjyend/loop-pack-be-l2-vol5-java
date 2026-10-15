@@ -2,6 +2,8 @@
 
 기존 상품 목록의 응답과 DB 조회 비용을 먼저 기록한 뒤, 같은 조건에서 SQL·인덱스 개선 효과를 비교한다. 이 첫 증분은 측정 기반이며 성능 개선이나 Redis 캐시 완료를 뜻하지 않는다. 요구사항은 [W4 원문](assignment-original.md), 유지할 계약은 [API 계약](../week2/commerce-api-contract.md#목록-필터페이지정렬-제안)을 따른다.
 
+이 문서의 개선 전 수치는 당시 기록으로 보존한다. 후속 SQL·인덱스 변경과 559개 전체 검사 결과는 [1단계 개선 기록](product-query-optimization.md)에 있다. 현재 측정 테스트의 기본 실행은 001~007을 적용한 **현재 구현**이며 `build/reports/week4/product-query-current.json`에 기록한다. 아래 개선 전 파일 이름·6개 DDL 설명은 당시 실행 기준이다. 이전 쿼리와 현행 쿼리를 label만으로 바꾸지는 않는다.
+
 ## 진행 범위
 
 1. 기존 수동 DDL을 전용 MySQL 컨테이너에 적용한다. 로컬·공유 DB와 기존 자동 생성 테스트 스키마를 변경하지 않는다.
@@ -59,7 +61,7 @@ HTTP 200·`meta.result=SUCCESS`, `totalElements=99`, `totalPages=5`를 기대한
 - 최소값·p50·p95·최대값과 원시 표본을 함께 보관한다. 로컬 컨테이너, 작은 표본, 계측·테스트 실행의 비용을 포함하므로 운영 처리량이나 지연 상한으로 일반화하지 않는다. 개선 후도 같은 측정 조건을 유지한다.
 - 실행 계획의 EXPLAIN ANALYZE 역시 SELECT를 실제 실행한다. 준비 실행·표본 측정과 구간을 구분하며, 사용 key·예상/실제 rows·loops·정렬 단계를 읽는다.
 
-## 실행
+## 실행 (현재 측정 도구)
 
 Docker와 Java 21이 필요하다. 테스트가 소유한 컨테이너만 종료하며 공유 Redis FLUSHALL이나 기존 DB 삭제를 하지 않는다.
 
@@ -70,7 +72,7 @@ Docker와 Java 21이 필요하다. 테스트가 소유한 컨테이너만 종료
   --rerun-tasks --console=plain
 ```
 
-측정 결과는 `apps/commerce-api/build/reports/week4/product-query-baseline.json`에 생성한다. 재실행 시 갱신되는 빌드 산출물이므로 개선 전후 비교 시 각 실행의 결과와 실행 환경을 구분해 보관한다. 실제 비교 요약은 이 기록에 갱신하고, 통과하지 않은 실행을 성능 증거로 사용하지 않는다.
+현재 기본 실행은 `apps/commerce-api/build/reports/week4/product-query-current.json`에 생성한다. 개선 전 당시 출력은 `product-query-baseline.json`이었으며 아래 evidence 파일로 보존했다. 지금의 쿼리·001~007 스키마로 재실행한 결과를 개선 전 기준선으로 덮어쓰지 않는다. 인덱스 비교 모드와 파일 표식은 [후속 재현 절차](product-query-optimization.md#재현)를 따른다. 빌드 산출물은 재실행 시 갱신되므로 각 실행의 실제 코드·SQL·스키마·환경을 구분해 보관하고, 통과하지 않은 실행을 성능 증거로 사용하지 않는다.
 
 ## 개선 전 실제 측정 결과
 

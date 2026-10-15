@@ -121,6 +121,12 @@ W2 초기 구현 증분의 기준선은 [고객 브랜드 조회 application 기
 
 ## 최신 통합 검사
 
+### W4 1단계 SQL·인덱스 개선 — 2026-10-15
+
+21:23 KST에 `./gradlew :apps:commerce-api:check --rerun-tasks --console=plain`이 **BUILD SUCCESSFUL·종료 코드 0**으로 완료됐다. **62개 스위트·559개 테스트 통과, 실패·오류·skip 0, Checkstyle XML 11개 위반 0·ArchUnit 통과**다. 시작 HEAD `9904a5f`에 고객 가격순·최신순 쿼리, 007 인덱스, 회귀·측정 테스트를 변경한 작업 트리 기준이다.
+
+동일 seed의 실제 API·SQL·실행 계획·반복 지연 비교와 인덱스 부재 Red→Green, 기존 데이터 보존 증거는 [W4 개선 기록](../week4/product-query-optimization.md)에 남긴다. Redis 캐시·장애 복구와 W4 전체 과제·실제 제출 완료를 뜻하지 않는다. 아래 W3 검사는 당시의 기록으로 보존한다.
+
 ### W3 최종 재검사와 문서 정합성 — 2026-10-09
 
 2026-10-09 14:35 KST, 코드 기준 `12f9afc`에서 아래 명령이 **BUILD SUCCESSFUL / 종료 코드 0**으로 끝났다. 이번 마무리에서는 문서만 수정했으며 코드·테스트·검사 규칙은 변경하지 않았다.

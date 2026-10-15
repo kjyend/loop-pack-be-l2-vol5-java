@@ -23,6 +23,12 @@ public class ProductQueryRepositoryImpl implements ProductQueryRepository {
             p.id, p.name, p.price, p.stock.quantity, b.id, b.name, count(l.id),
             p.createdAt, p.updatedAt, p.deletedAt)
         """;
+    private static final String PAGE_PROJECTION = """
+        select new com.loopers.domain.product.ProductSummary(
+            p.id, p.name, p.price, p.stock.quantity, b.id, b.name,
+            (select count(l.id) from ProductLike l where l.product.id = p.id),
+            p.createdAt, p.updatedAt, p.deletedAt)
+        """;
     private static final String PRODUCT_FROM = " from Product p join p.brand b ";
     private static final String LIKE_JOIN = " left join ProductLike l on l.product.id = p.id ";
     private static final String OWN_LIKE_JOIN = " join ProductLike own on own.product.id = p.id ";
@@ -58,6 +64,12 @@ public class ProductQueryRepositoryImpl implements ProductQueryRepository {
             case PRICE_ASC -> "p.price asc, p.id desc";
             case LIKES_DESC -> "count(l.id) desc, p.id desc";
         };
+        if (!includeDeleted && sort != ProductSort.LIKES_DESC) {
+            // 가격/최신순은 좋아요 집계가 페이지 선정에 영향을 주지 않는다.
+            // 목록 SQL 안의 count로 읽기 시점과 0개 집계를 유지하며 전체 join/group을 피한다.
+            String from = PRODUCT_FROM + " where " + predicate;
+            return readPage(PAGE_PROJECTION + from + " order by " + order, from, parameters, page, size);
+        }
         return page("", predicate, parameters, "", order, page, size);
     }
 
@@ -70,14 +82,18 @@ public class ProductQueryRepositoryImpl implements ProductQueryRepository {
     private PageResult<ProductSummary> page(String extraJoin, String predicate, Map<String, Object> parameters,
                                             String extraGroup, String order, int page, int size) {
         String where = " where " + predicate;
-        long total = query("select count(p.id)" + PRODUCT_FROM + extraJoin + where,
-            Long.class, parameters).getSingleResult();
+        return readPage(PROJECTION + PRODUCT_FROM + LIKE_JOIN + extraJoin + where + GROUP_BY + extraGroup
+            + " order by " + order, PRODUCT_FROM + extraJoin + where, parameters, page, size);
+    }
+
+    private PageResult<ProductSummary> readPage(String selection, String countFrom, Map<String, Object> parameters,
+                                                int page, int size) {
+        long total = query("select count(p.id)" + countFrom, Long.class, parameters).getSingleResult();
         long offset = (long) page * size;
         if (offset >= total) {
             return PageResult.of(List.of(), page, size, total);
         }
-        List<ProductSummary> items = query(PROJECTION + PRODUCT_FROM + LIKE_JOIN + extraJoin
-            + where + GROUP_BY + extraGroup + " order by " + order, ProductSummary.class, parameters)
+        List<ProductSummary> items = query(selection, ProductSummary.class, parameters)
             .setFirstResult(Math.toIntExact(offset)).setMaxResults(size).getResultList();
         return PageResult.of(items, page, size, total);
     }

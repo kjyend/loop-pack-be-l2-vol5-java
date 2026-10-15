@@ -47,7 +47,7 @@ class CommerceSchemaIntegrationTest {
 
     private static final List<String> TABLES = List.of("brand", "user", "product", "like", "order", "order_item");
     private static final List<String> SCRIPTS = List.of("001-brand.sql", "002-user.sql", "003-product.sql",
-        "004-like.sql", "005-order.sql", "006-order-item.sql");
+        "004-like.sql", "005-order.sql", "006-order-item.sql", "007-product-brand-price-index.sql");
 
     @Container
     private static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.0")
@@ -240,10 +240,36 @@ class CommerceSchemaIntegrationTest {
         assertIndex("product", "idx_product_brand_deleted", "brand_id", "deleted_at");
         assertIndex("product", "idx_product_latest", "deleted_at", "created_at", "id");
         assertIndex("product", "idx_product_price", "deleted_at", "price", "id");
+        assertIndex("product", "idx_product_brand_price", "brand_id", "deleted_at", "price", "id");
+        assertThat(jdbc.queryForList("""
+            SELECT COLLATION FROM information_schema.STATISTICS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'product' AND INDEX_NAME = 'idx_product_brand_price'
+            ORDER BY SEQ_IN_INDEX
+            """, String.class)).containsExactly("A", "A", "A", "D");
         assertIndex("like", "idx_like_product", "product_id");
         assertIndex("like", "idx_like_user_created", "user_id", "created_at", "id");
         assertIndex("order", "idx_order_user_created", "user_id", "created_at", "id");
         assertIndex("order", "idx_order_created", "created_at", "id");
+    }
+
+    @Test
+    void addsBrandPriceIndexToExistingDataWithoutReplacingRowsOrIndexes() {
+        // 이 클래스 전용 DB에서 001~006만 적용된 기존 배포 상태를 재현한다.
+        jdbc.execute("DROP INDEX idx_product_brand_price ON product");
+        seedRows();
+        var before = snapshot();
+        ResourceDatabasePopulator addition = new ResourceDatabasePopulator(
+            new ClassPathResource("db/schema/007-product-brand-price-index.sql"));
+
+        addition.execute(dataSource);
+
+        assertThat(snapshot()).isEqualTo(before);
+        assertIndex("product", "idx_product_brand_price", "brand_id", "deleted_at", "price", "id");
+        assertIndex("product", "idx_product_brand_deleted", "brand_id", "deleted_at");
+        assertIndex("product", "idx_product_latest", "deleted_at", "created_at", "id");
+        assertIndex("product", "idx_product_price", "deleted_at", "price", "id");
+        assertThatThrownBy(() -> addition.execute(dataSource)).isInstanceOf(ScriptStatementFailedException.class);
+        assertThat(snapshot()).isEqualTo(before);
     }
 
     @Test
