@@ -4,6 +4,8 @@
 
 이 문서의 개선 전 수치는 당시 기록으로 보존한다. 후속 SQL·인덱스 변경과 559개 전체 검사 결과는 [1단계 개선 기록](product-query-optimization.md)에 있다. 현재 측정 테스트의 기본 실행은 001~007을 적용한 **현재 구현**이며 `build/reports/week4/product-query-current.json`에 기록한다. 아래 개선 전 파일 이름·6개 DDL 설명은 당시 실행 기준이다. 이전 쿼리와 현행 쿼리를 label만으로 바꾸지는 않는다.
 
+후속 [목록·상세 비용 비교](product-read-cost-comparison.md)도 기본 실행에 포함된다. 목록 6조건·상세 2조건을 별도 준비·2라운드로 측정하고 `build/reports/week4/product-read-cost-comparison.json`에 기록한다. 이 문서의 고정 요청 5회 준비·20회 측정과는 별도 구간이다. Redis 구현은 아직 없다.
+
 ## 진행 범위
 
 1. 기존 수동 DDL을 전용 MySQL 컨테이너에 적용한다. 로컬·공유 DB와 기존 자동 생성 테스트 스키마를 변경하지 않는다.

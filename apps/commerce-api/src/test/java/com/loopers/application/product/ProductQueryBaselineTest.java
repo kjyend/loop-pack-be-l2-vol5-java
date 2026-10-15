@@ -69,6 +69,8 @@ class ProductQueryBaselineTest {
     private static final String REQUEST = "/api/v1/products?brandId=1007&sort=price_asc&page=0&size=20";
     private static final int WARMUPS = 5;
     private static final int SAMPLES = 20;
+    private static final int READ_PATH_WARMUPS = 10;
+    private static final int READ_PATH_SAMPLES = 50;
     private static final String INDEX_ADDITION = "007-product-brand-price-index.sql";
     private static final boolean COMPARE_INDEX = Boolean.parseBoolean(System.getenv("W4_COMPARE_BRAND_PRICE_INDEX"));
     private static final List<String> SCHEMA = List.of("001-brand.sql", "002-user.sql", "003-product.sql",
@@ -154,7 +156,137 @@ class ProductQueryBaselineTest {
             }
         } else {
             measure(label);
+            compareListAndDetailReadCosts();
         }
+    }
+
+    private void compareListAndDetailReadCosts() throws IOException {
+        List<ReadCase> cases = new ArrayList<>();
+        for (String sort : List.of("latest", "price_asc", "likes_desc")) {
+            cases.add(new ReadCase("brand-" + sort,
+                "/api/v1/products?brandId=1007&sort=" + sort + "&page=0&size=20",
+                expectedPage(1007, sort, 0, 20)));
+            cases.add(new ReadCase("all-" + sort,
+                "/api/v1/products?sort=" + sort + "&page=0&size=20", expectedPage(null, sort, 0, 20)));
+        }
+        cases.add(new ReadCase("detail-zero-likes", "/api/v1/products/100010", expectedProduct(10)));
+        cases.add(new ReadCase("detail-200-likes", "/api/v1/products/100997", expectedProduct(997)));
+        assertThat(expectedProduct(10).path("likeCount").asInt()).isZero();
+        assertThat(expectedProduct(997).path("likeCount").asInt()).isEqualTo(200);
+        for (int warmup = 0; warmup < READ_PATH_WARMUPS; warmup++) {
+            for (ReadCase candidate : cases) {
+                assertResponse(http.getForEntity(candidate.request(), JsonNode.class), candidate.expected());
+            }
+        }
+
+        List<Map<String, Object>> rounds = new ArrayList<>();
+        Map<String, List<JdbcReadProbe.Query>> representativeQueries = new LinkedHashMap<>();
+        for (int round = 1; round <= 2; round++) {
+            Map<String, ReadSamples> measurements = new LinkedHashMap<>();
+            cases.forEach(candidate -> measurements.put(candidate.label(), new ReadSamples()));
+            for (int sample = 0; sample < READ_PATH_SAMPLES; sample++) {
+                // 매 회차 시작 후보를 회전하고 2라운드는 순서를 뒤집는다. 동시 부하 실험은 아니다.
+                for (int position = 0; position < cases.size(); position++) {
+                    int offset = round == 1 ? position : cases.size() - 1 - position;
+                    ReadCase candidate = cases.get((sample + offset) % cases.size());
+                    ReadSamples samples = measurements.get(candidate.label());
+                    probe.start();
+                    ResponseEntity<JsonNode> response;
+                    List<JdbcReadProbe.Query> queries;
+                    long elapsed;
+                    try {
+                        long started = System.nanoTime();
+                        response = http.getForEntity(candidate.request(), JsonNode.class);
+                        elapsed = System.nanoTime() - started;
+                    } finally {
+                        queries = probe.stop();
+                    }
+                    assertResponse(response, candidate.expected());
+                    assertThat(queries).as(candidate.label() + " 실제 SELECT 관찰").isNotEmpty();
+                    queries.forEach(this::assertBindingsCaptured);
+                    samples.httpNanos.add(elapsed);
+                    samples.sqlCounts.add(queries.size());
+                    samples.jdbcExecuteNanos.add(queries.stream().mapToLong(JdbcReadProbe.Query::executeNanos).sum());
+                    representativeQueries.putIfAbsent(candidate.label(), queries);
+                }
+            }
+            List<Map<String, Object>> results = new ArrayList<>();
+            for (ReadCase candidate : cases) {
+                ReadSamples samples = measurements.get(candidate.label());
+                assertThat(samples.httpNanos).hasSize(READ_PATH_SAMPLES);
+                Map<String, Object> result = new LinkedHashMap<>();
+                result.put("case", candidate.label());
+                result.put("request", candidate.request());
+                result.put("rawHttpNanos", samples.httpNanos);
+                result.put("httpLatencyMillis", latency(samples.httpNanos));
+                result.put("rawJdbcExecuteSumNanos", samples.jdbcExecuteNanos);
+                result.put("jdbcExecuteSumMillis", latency(samples.jdbcExecuteNanos));
+                result.put("sqlCountsPerRequest", samples.sqlCounts);
+                results.add(result);
+            }
+            rounds.add(Map.of("round", round, "results", results));
+        }
+
+        // 모든 조건의 HTTP 측정을 마친 뒤 계획을 수집한다. EXPLAIN이 다음 조건을 예열하지 않는다.
+        List<Map<String, Object>> plans = new ArrayList<>();
+        for (ReadCase candidate : cases) {
+            List<Map<String, Object>> queries = new ArrayList<>();
+            for (JdbcReadProbe.Query query : representativeQueries.get(candidate.label())) {
+                queries.add(Map.of("sql", query.sql(), "parameters", query.parameters(),
+                    "explain", jdbc.queryForList("EXPLAIN " + query.sql(), query.parameters().toArray()),
+                    "explainAnalyze", jdbc.queryForList("EXPLAIN ANALYZE " + query.sql(), query.parameters().toArray())));
+            }
+            plans.add(Map.of("case", candidate.label(), "expectedAndVerifiedData", candidate.expected(),
+                "queries", queries));
+        }
+        Map<String, Object> report = new LinkedHashMap<>();
+        report.put("measuredAt", Instant.now().toString());
+        report.put("stage", "Current DB-only list/detail HTTP read cost comparison; no cache implementation");
+        report.put("sourceSha256", sha256(Path.of("src/main/java/com/loopers/infrastructure/product/ProductQueryRepositoryImpl.java")));
+        report.put("harnessSha256", sha256(Path.of("src/test/java/com/loopers/application/product/ProductQueryBaselineTest.java")));
+        report.put("seedSha256", sha256(Path.of("src/test/resources", SEED)));
+        report.put("seed", SEED + " (v1); 10000 products, 9812 visible, 46955 likes, 100 brands");
+        report.put("javaVersion", System.getProperty("java.version"));
+        report.put("mysqlVersion", jdbc.queryForObject("SELECT VERSION()", String.class));
+        report.put("sessionIsolation", jdbc.queryForObject("SELECT @@SESSION.transaction_isolation", String.class));
+        List<String> scripts = new ArrayList<>(SCHEMA);
+        scripts.add(INDEX_ADDITION);
+        report.put("schemaScripts", scripts);
+        report.put("warmupsPerCase", READ_PATH_WARMUPS);
+        report.put("samplesPerCasePerRound", READ_PATH_SAMPLES);
+        report.put("preparation", "Owned containers; seed; ANALYZE; contracts; fixed baseline; then 10 warmup cycles for all cases");
+        report.put("caseOrder", cases.stream().map(ReadCase::label).toList());
+        report.put("schedule", "Each sample cycle visits all 8 cases once; index=(sample+position)%8 in round 1, (sample+7-position)%8 in round 2");
+        report.put("rounds", rounds);
+        report.put("plansAfterAllTiming", plans);
+        report.put("physicalIndexes", jdbc.queryForList("""
+            SELECT TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME, COLLATION
+            FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE()
+            ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX
+            """));
+        report.put("limitations", List.of("Local sequential warm requests; no concurrent writers, cold disk, throughput or real traffic distribution",
+            "List returns 20 products and page totals; detail returns one product. These are different operations, not equal payload benchmarks",
+            "HTTP includes local client, JSON decoding and probe overhead; assertions and EXPLAIN are outside timing",
+            "JDBC execute sum excludes subsequent ResultSet consumption and is not complete DB time",
+            "Two rounds in one JVM and database; nearest-rank percentiles; no fixed speed assertion",
+            "Cache hit ratio, Redis latency, invalidation and consistency protection costs have not been measured"));
+        Path destination = Path.of("build", "reports", "week4", "product-read-cost-comparison.json");
+        Files.createDirectories(destination.getParent());
+        mapper.writerWithDefaultPrettyPrinter().writeValue(destination.toFile(), report);
+    }
+
+    private static Map<String, Double> latency(List<Long> values) {
+        List<Long> sorted = values.stream().sorted().toList();
+        return Map.of("min", sorted.getFirst() / 1_000_000.0, "p50", percentile(sorted, 0.50) / 1_000_000.0,
+            "p95", percentile(sorted, 0.95) / 1_000_000.0, "max", sorted.getLast() / 1_000_000.0);
+    }
+
+    private record ReadCase(String label, String request, JsonNode expected) { }
+
+    private static final class ReadSamples {
+        private final List<Long> httpNanos = new ArrayList<>();
+        private final List<Integer> sqlCounts = new ArrayList<>();
+        private final List<Long> jdbcExecuteNanos = new ArrayList<>();
     }
 
     private void analyzeProducts() {
@@ -311,23 +443,26 @@ class ProductQueryBaselineTest {
             .boxed().sorted(ordering.thenComparing(Comparator.reverseOrder())).toList();
         ObjectNode expected = mapper.createObjectNode();
         ArrayNode items = expected.putArray("items");
-        matching.stream().skip((long) page * size).limit(size).forEach(index -> {
-            ObjectNode item = items.addObject();
-            item.put("productId", 100000 + index);
-            item.put("name", "W4 product %05d".formatted(index));
-            item.put("price", price(index));
-            item.put("stockQuantity", index % 17 == 0 ? 0 : 1 + index % 50);
-            ObjectNode brand = item.putObject("brand");
-            int actualBrandId = 1001 + (index - 1) % 100;
-            brand.put("brandId", actualBrandId);
-            brand.put("name", "W4 brand %03d".formatted(actualBrandId - 1000));
-            item.put("likeCount", likes(index));
-        });
+        matching.stream().skip((long) page * size).limit(size).forEach(index -> items.add(expectedProduct(index)));
         expected.put("page", page);
         expected.put("size", size);
         expected.put("totalElements", matching.size());
         expected.put("totalPages", (matching.size() + size - 1) / size);
         return expected;
+    }
+
+    private ObjectNode expectedProduct(int index) {
+        ObjectNode item = mapper.createObjectNode();
+        item.put("productId", 100000 + index);
+        item.put("name", "W4 product %05d".formatted(index));
+        item.put("price", price(index));
+        item.put("stockQuantity", index % 17 == 0 ? 0 : 1 + index % 50);
+        ObjectNode brand = item.putObject("brand");
+        int actualBrandId = 1001 + (index - 1) % 100;
+        brand.put("brandId", actualBrandId);
+        brand.put("name", "W4 brand %03d".formatted(actualBrandId - 1000));
+        item.put("likeCount", likes(index));
+        return item;
     }
 
     private static int price(int index) {
