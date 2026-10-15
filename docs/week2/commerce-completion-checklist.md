@@ -121,6 +121,12 @@ W2 초기 구현 증분의 기준선은 [고객 브랜드 조회 application 기
 
 ## 최신 통합 검사
 
+### W4 무필터 최신순·가격순 페이지 한정 집계 — 2026-10-15
+
+23:31 KST에 `./gradlew :apps:commerce-api:check --rerun-tasks --console=plain`이 **BUILD SUCCESSFUL·종료 코드 0**으로 완료됐다. **63개 스위트·569개 테스트 통과, 실패·오류·skip 0, Checkstyle XML 11개 위반 0·ArchUnit 통과**다. 시작 HEAD `c161dea`의 작업 트리에서 무필터 최신순·가격순 저장소 조회, 중간 DTO와 관련 테스트를 변경했다.
+
+구조적 Red 2개 → Green, size 1/20/100의 실제 HTTP·SQL 경계, 무필터 동점 페이지·노출 0개, 중간 쓰기 커밋에도 같은 스냅샷을 반환하는 실제 트랜잭션을 확인했다. 같은 10,000개 seed의 별도 전후 측정에서 p50 약 48~50% 감소를 확인했으며 원시 증거·선택 이유·한계는 [무필터 목록 개선 기록](../week4/global-list-query-optimization.md)에 남긴다. Redis·로컬 캐시·새 인덱스·쓰기 락 변경은 없으며 W4 캐시 과제 전체 완료를 뜻하지 않는다. 아래 검사는 당시 기록으로 보존한다.
+
 ### W4 1단계 SQL·인덱스 개선 — 2026-10-15
 
 21:23 KST에 `./gradlew :apps:commerce-api:check --rerun-tasks --console=plain`이 **BUILD SUCCESSFUL·종료 코드 0**으로 완료됐다. **62개 스위트·559개 테스트 통과, 실패·오류·skip 0, Checkstyle XML 11개 위반 0·ArchUnit 통과**다. 시작 HEAD `9904a5f`에 고객 가격순·최신순 쿼리, 007 인덱스, 회귀·측정 테스트를 변경한 작업 트리 기준이다.

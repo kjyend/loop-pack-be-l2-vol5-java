@@ -8,9 +8,12 @@ import com.loopers.CommerceApiApplication;
 import com.loopers.support.JdbcReadProbe;
 import com.zaxxer.hikari.HikariDataSource;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.TypeExcludeFilter;
 import org.springframework.boot.test.autoconfigure.filter.TypeExcludeFilters;
@@ -120,9 +123,7 @@ class ProductQueryBaselineTest {
     }
 
     @BeforeAll
-    void seedOwnedDatabaseAndInstallReadProbe() throws SQLException {
-        doAnswer(invocation -> probe.wrap((Connection) invocation.callRealMethod()))
-            .when(dataSource).getConnection();
+    void seedOwnedDatabase() {
         new ResourceDatabasePopulator(new ClassPathResource(SEED)).execute(dataSource);
         jdbc.setQueryTimeout(30);
         // 빈 테이블 통계로 개선 효과를 과장하지 않도록, 전후 측정 모두 같은 준비를 한다.
@@ -132,6 +133,12 @@ class ProductQueryBaselineTest {
         requests.setConnectTimeout(5000);
         requests.setReadTimeout(15000);
         http.getRestTemplate().setRequestFactory(requests);
+    }
+
+    @BeforeEach
+    void installReadProbeAfterMockitoReset() throws SQLException {
+        doAnswer(invocation -> probe.wrap((Connection) invocation.callRealMethod()))
+            .when(dataSource).getConnection();
     }
 
     @Test
@@ -158,6 +165,56 @@ class ProductQueryBaselineTest {
             measure(label);
             compareListAndDetailReadCosts();
         }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"latest", "price_asc"})
+    void limitsGlobalLikeAggregationToTheSelectedPage(String sort) {
+        for (int size : List.of(1, 20, 100)) {
+            for (int page : List.of(0, 1)) {
+                JsonNode expected = expectedPage(null, sort, page, size);
+                List<JdbcReadProbe.Query> queries = observePage(sort, page, size, expected);
+                // 선택한 구현의 비용 경계다. 상품 개수에 비례하는 SELECT나 전체 좋아요 집계를 허용하지 않는다.
+                assertThat(queries).as("count + 좋아요 없는 page + 선택 ID의 일괄 집계").hasSize(3);
+                assertThat(queries.get(0).sql()).doesNotContain("`like`");
+                assertThat(queries.get(1).sql()).doesNotContain("`like`").contains(" limit ");
+                JdbcReadProbe.Query aggregate = queries.get(2);
+                assertThat(aggregate.sql()).contains("from `like`", " in (", " group by ");
+                List<Long> selectedIds = new ArrayList<>();
+                expected.path("items").forEach(item -> selectedIds.add(item.path("productId").asLong()));
+                assertThat(aggregate.parameters()).extracting(value -> ((Number) value).longValue())
+                    .containsExactlyInAnyOrderElementsOf(selectedIds);
+                assertThat(selectedIds).hasSize(size).doesNotHaveDuplicates();
+                queries.forEach(this::assertBindingsCaptured);
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"latest", "price_asc"})
+    void skipsLikeAggregationBeyondTheLastGlobalPage(String sort) {
+        for (int page : List.of(491, Integer.MAX_VALUE)) {
+            JsonNode expected = expectedPage(null, sort, page, 20);
+            assertThat(expected.path("items")).isEmpty();
+            assertThat(expected.path("totalElements").asInt()).isEqualTo(9812);
+            List<JdbcReadProbe.Query> queries = observePage(sort, page, 20, expected);
+            assertThat(queries).hasSize(1);
+            assertThat(queries.getFirst().sql()).contains("count(").doesNotContain("`like`");
+        }
+    }
+
+    private List<JdbcReadProbe.Query> observePage(String sort, int page, int size, JsonNode expected) {
+        probe.start();
+        ResponseEntity<JsonNode> response;
+        List<JdbcReadProbe.Query> queries;
+        try {
+            response = http.getForEntity("/api/v1/products?sort=" + sort + "&page=" + page + "&size=" + size,
+                JsonNode.class);
+        } finally {
+            queries = probe.stop();
+        }
+        assertResponse(response, expected);
+        return queries;
     }
 
     private void compareListAndDetailReadCosts() throws IOException {

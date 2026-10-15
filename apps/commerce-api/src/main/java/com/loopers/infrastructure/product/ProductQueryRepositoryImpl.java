@@ -5,6 +5,7 @@ import com.loopers.domain.product.ProductQueryRepository;
 import com.loopers.domain.product.ProductSort;
 import com.loopers.domain.product.ProductSummary;
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.Tuple;
 import jakarta.persistence.TypedQuery;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -27,6 +28,11 @@ public class ProductQueryRepositoryImpl implements ProductQueryRepository {
         select new com.loopers.domain.product.ProductSummary(
             p.id, p.name, p.price, p.stock.quantity, b.id, b.name,
             (select count(l.id) from ProductLike l where l.product.id = p.id),
+            p.createdAt, p.updatedAt, p.deletedAt)
+        """;
+    private static final String GLOBAL_PAGE_PROJECTION = """
+        select new com.loopers.infrastructure.product.ProductPageRow(
+            p.id, p.name, p.price, p.stock.quantity, b.id, b.name,
             p.createdAt, p.updatedAt, p.deletedAt)
         """;
     private static final String PRODUCT_FROM = " from Product p join p.brand b ";
@@ -65,9 +71,13 @@ public class ProductQueryRepositoryImpl implements ProductQueryRepository {
             case LIKES_DESC -> "count(l.id) desc, p.id desc";
         };
         if (!includeDeleted && sort != ProductSort.LIKES_DESC) {
-            // 가격/최신순은 좋아요 집계가 페이지 선정에 영향을 주지 않는다.
-            // 목록 SQL 안의 count로 읽기 시점과 0개 집계를 유지하며 전체 join/group을 피한다.
             String from = PRODUCT_FROM + " where " + predicate;
+            if (brandId == null) {
+                // 무필터 조회는 정렬 전에 전체 상품의 상관 집계가 실행될 수 있어 페이지를 먼저 확정한다.
+                return readGlobalPage(from, order, page, size);
+            }
+            // 가격/최신순은 좋아요 집계가 페이지 선정에 영향을 주지 않는다.
+            // 브랜드 필터 경로는 기존 페이지 projection과 인덱스 접근을 유지한다.
             return readPage(PAGE_PROJECTION + from + " order by " + order, from, parameters, page, size);
         }
         return page("", predicate, parameters, "", order, page, size);
@@ -95,6 +105,30 @@ public class ProductQueryRepositoryImpl implements ProductQueryRepository {
         }
         List<ProductSummary> items = query(selection, ProductSummary.class, parameters)
             .setFirstResult(Math.toIntExact(offset)).setMaxResults(size).getResultList();
+        return PageResult.of(items, page, size, total);
+    }
+
+    private PageResult<ProductSummary> readGlobalPage(String from, String order, int page, int size) {
+        long total = query("select count(p.id)" + from, Long.class, Map.of()).getSingleResult();
+        long offset = (long) page * size;
+        if (offset >= total) {
+            return PageResult.of(List.of(), page, size, total);
+        }
+        List<ProductPageRow> rows = query(GLOBAL_PAGE_PROJECTION + from + " order by " + order,
+            ProductPageRow.class, Map.of()).setFirstResult(Math.toIntExact(offset)).setMaxResults(size).getResultList();
+        if (rows.isEmpty()) {
+            return PageResult.of(List.of(), page, size, total);
+        }
+        List<Long> ids = rows.stream().map(ProductPageRow::productId).toList();
+        List<Tuple> counts = query("""
+            select l.product.id as productId, count(l.id) as likeCount
+            from ProductLike l where l.product.id in :productIds group by l.product.id
+            """, Tuple.class, Map.of("productIds", ids)).getResultList();
+        Map<Long, Long> likesByProduct = new HashMap<>();
+        counts.forEach(count -> likesByProduct.put(count.get("productId", Long.class), count.get("likeCount", Long.class)));
+        // 집계 SQL의 반환 순서와 무관하게 원래 페이지 순서를 보존하며, 좋아요 관계가 없으면 0이다.
+        List<ProductSummary> items = rows.stream()
+            .map(row -> row.toSummary(likesByProduct.getOrDefault(row.productId(), 0L))).toList();
         return PageResult.of(items, page, size, total);
     }
 
