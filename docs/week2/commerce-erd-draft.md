@@ -23,6 +23,17 @@ W2 구현은 고객 12개·관리자 13개의 **25개 API를 JPA/MySQL까지 연
 
 [API 계약](commerce-api-contract.md), [TDD 계획](commerce-tdd-plan.md), [정책 선택과 설계 검토](commerce-policy-decisions.md)는 각각의 상세 내용을 관리한다. 버드뷰·계층 의존·도메인 관계·세 대표 흐름은 이 문서에 함께 유지한다.
 
+## W4 상품 조회 개선의 첫 증분
+
+[W4 과제](../week4/assignment-original.md)의 첫 증분은 기존 상품 조회를 변경하지 않고 개선 전 기준선을 확보하는 것이다. 실제 `GET /api/v1/products?brandId=1007&sort=price_asc&page=0&size=20` 요청을 격리된 MySQL의 상품 10,000개 데이터로 측정한다. 기존 Controller → ProductQueryService → ProductQueryRepositoryImpl → MySQL 경로를 사용하며 업무 모델·계층 의존·세 대표 흐름은 유지한다.
+
+- 기존 응답 필드, 브랜드 필터, 세 정렬과 ID 내림차순 동점 기준, 페이지·전체 개수, 삭제 비노출을 유지한다.
+- 수동 DDL의 실제 인덱스와 seed를 고정하고, 요청 SQL·바인딩·실행 계획·반복 HTTP 지연·응답을 기록한다. SQL 수만으로 성능을 판단하지 않는다.
+- 이번 증분에서는 운영 쿼리·인덱스·트랜잭션·락을 변경하지 않고 캐시도 추가하지 않는다. 측정 결과를 보고 다음 개선 대안을 선택한다.
+- 캐시 대상(목록 또는 상세), payload·키·TTL, 표시 신선도와 실패·복구 정책은 아직 미정이다. 삭제와 겹친 조회, 커밋 후 무효화 실패의 HTTP 응답, Redis 복구 완료 기준은 담당자 답변과 함께 결정한다. 기존 비노출·소유권·DB 기반 주문 판단은 완화하지 않는다.
+
+측정 구성·실행 방법·결과는 [상품 조회 기준선 기록](../week4/product-query-baseline.md), 테스트 기대값은 [W4 기준선 TDD 계획](commerce-tdd-plan.md#w4-상품-조회-기준선-tdd)을 따른다. Redis와 캐시 변경 책임은 정책 선택 후 이 전체 설계의 버드뷰·계층·대표 흐름에 확장한다.
+
 ## W3 브랜드·상품 일괄 논리 삭제
 
 출처는 사용자가 제공한 W3 「Implementation Quest」의 브랜드 일괄 처리 요구와 후속 설계 대화다. 기존 P00의 논리 삭제를 유지하고, 사용자가 선택한 **비관적 잠금·단일 트랜잭션**을 적용한다.
