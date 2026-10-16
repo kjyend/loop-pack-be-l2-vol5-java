@@ -4,7 +4,7 @@
 
 ## 제공 범위와 적용 순서
 
-W2의 `001`~`006`은 커머스의 6개 테이블을 빈 MySQL 8 데이터베이스에 수동으로 최초 생성하는 SQL이다. W4에서는 기존 파일·데이터·인덱스를 유지하고 상품 조회용 인덱스를 추가하는 `007`을 제공한다. 현재 신규 설치 순서는 **7개 스크립트이며, 테이블은 그대로 6개**다. 선택 이유와 측정 결과는 [W4 상품 조회 개선 기록](../week4/product-query-optimization.md)을 따른다.
+W2의 `001`~`006`은 커머스의 6개 업무 테이블을 빈 MySQL 8 데이터베이스에 수동으로 최초 생성하는 SQL이다. W4는 조회 인덱스 `007`과 목록 캐시 버전 메타데이터 `008`을 추가한다. 현재 신규 설치는 **8개 스크립트·업무 6개 + 메타데이터 1개 테이블**이다. [인덱스 기록](../week4/product-query-optimization.md)과 [캐시 기록](../week4/product-list-cache-tdd-log.md)을 구분한다.
 
 | 순서·파일 | 역할·주요 제약 |
 | --- | --- |
@@ -15,6 +15,7 @@ W2의 `001`~`006`은 커머스의 6개 테이블을 빈 MySQL 8 데이터베이�
 | [005-order.sql](../../apps/commerce-api/src/main/resources/db/schema/005-order.sql) | 인용한 `order`, user FK, DRAFT/CONFIRMED, 금액·결제 상태의 CHECK |
 | [006-order-item.sql](../../apps/commerce-api/src/main/resources/db/schema/006-order-item.sql) | order_item, order/product FK, UNIQUE(order_id, product_id), 양수 수량·생성 스냅샷 |
 | [007-product-brand-price-index.sql](../../apps/commerce-api/src/main/resources/db/schema/007-product-brand-price-index.sql) | 기존 product에 `idx_product_brand_price (brand_id, deleted_at, price ASC, id DESC)` 추가. 테이블·데이터·기존 인덱스는 유지 |
+| [008-product-list-revision.sql](../../apps/commerce-api/src/main/resources/db/schema/008-product-list-revision.sql) | `product_list_revision` 메타데이터·singleton `(id=1, revision=0)` 초기화. 업무 데이터는 변경하지 않음 |
 
 SQL 파일은 애플리케이션 시작 시 자동 실행되지 않는다. 새 마이그레이션 프레임워크나 자동 스키마 적용 프로파일을 추가하지 않았다. 파일의 번호는 수동 적용 순서다. 기존 예시 API의 ExampleModel 테이블은 이 커머스 6개 테이블 범위에 포함하지 않는다.
 
@@ -37,9 +38,10 @@ SOURCE apps/commerce-api/src/main/resources/db/schema/004-like.sql;
 SOURCE apps/commerce-api/src/main/resources/db/schema/005-order.sql;
 SOURCE apps/commerce-api/src/main/resources/db/schema/006-order-item.sql;
 SOURCE apps/commerce-api/src/main/resources/db/schema/007-product-brand-price-index.sql;
+SOURCE apps/commerce-api/src/main/resources/db/schema/008-product-list-revision.sql;
 ```
 
-`001`~`006`은 각각 한 테이블의 CREATE TABLE이고 `007`은 CREATE INDEX다. MySQL DDL의 암묵적 커밋 때문에 일곱 파일이 하나의 트랜잭션으로 취소되지는 않는다. 중간 파일이 실패하면 앞서 성공한 테이블·인덱스는 남는다. 실패 원인과 실제 생성 상태를 확인한 뒤 남은 적용을 판단하며, 기존 테이블을 삭제하고 무조건 처음부터 다시 실행하는 절차를 제공하지 않는다.
+`001`~`006`은 각각 한 테이블의 CREATE TABLE이고 `007`은 CREATE INDEX, `008`은 메타데이터 CREATE와 초기 INSERT다. MySQL DDL의 암묵적 커밋 때문에 전체가 하나의 트랜잭션으로 취소되지는 않는다. 중간 실패 시 실제 상태를 확인하며 기존 테이블을 삭제하고 처음부터 다시 실행하지 않는다.
 
 이미 대상 테이블이 있으면 해당 CREATE가 실패한다. 기존 데이터를 지우거나 `IF NOT EXISTS`로 구조 차이를 숨기지 않는다. 이전에 브랜드 SQL만 적용했다면 기존 brand 구조가 검증한 001과 같은지 확인한 후 002부터 진행한다. 운영 중인 다른 스키마를 변경·교체하는 마이그레이션은 이번 최초 생성 파일의 역할이 아니다.
 
@@ -65,6 +67,22 @@ SHOW INDEX FROM product;
 이번 변경은 SQL 제공과 격리된 테스트 DB 검증 범위이며, 공유·운영 DB에 직접 적용한 것은 아니다.
 
 ## 저장 형태와 제약
+
+### W4 버전 테이블 배포·캐시 활성화
+
+기존 DB에는 새 코드 배포 전에 `008`을 적용하고 `SELECT * FROM product_list_revision`으로 `(1,0)`을 확인한다. **캐시 OFF도 쓰기의 버전 증가를 생략하지 않으므로 008이 필요하다.** CREATE 성공 후 INSERT만 실패했다면 트래픽을 막고 실제 행 상태부터 확인한다. 이미 존재하는 버전을 0으로 덮어쓰지 않는다. 빈 메타데이터의 동시 최초 INSERT는 교착이 발생할 수 있어 초기화를 사용자 요청에 맡기지 않는다.
+
+로컬은 사용자 선택으로 캐시 기본 OFF다. 기존 local `ddl-auto=create`는 앱 재시작 시 DB를 재생성하기 때문이다. 로컬 캐시 실험은 먼저 수동 스키마·008을 준비하고 다음처럼 자동 재생성을 끄고 활성화한다. `experiment-1`은 이 DB 수명에만 사용하는 예시 구분값이다.
+
+```shell
+./gradlew :apps:commerce-api:bootRun --args='--spring.jpa.hibernate.ddl-auto=none --commerce.product-list-cache.enabled=true --commerce.product-list-cache.namespace=commerce:local:experiment-1:products:v1'
+```
+
+앱 전체에 `validate`를 사용하려면 위 커머스 SQL에 포함되지 않은 기존 `ExampleModel` 테이블까지 준비되어 있어야 한다. 커머스 전용 스키마 테스트의 7개 엔티티 validate와 앱 전체 validate는 범위가 다르다.
+
+DB를 초기화·복원하거나 버전을 되돌릴 때는 **모든 앱의 namespace를 새 값으로 전환**하고 진행 중 이전 앱 요청을 정리한 후 트래픽을 재개한다. 이전 Redis 키와 재사용된 버전이 충돌하지 않게 하기 위한 조건이다. 운영 중 메타데이터 삭제·reset은 지원하지 않는다. 직접 SQL로 업무 데이터를 바꾸는 운영 작업도 같은 트랜잭션의 버전 증가 또는 트래픽 중단·namespace 교체 절차가 필요하다. 공유 Redis FLUSHALL을 복구 방법으로 사용하지 않는다.
+
+### 업무 테이블
 
 모든 테이블은 InnoDB·utf8mb4_general_ci를 사용한다. ID·가격·금액·잔액은 signed BIGINT, 재고·수량은 signed INT다. user ID만 애플리케이션 fixture가 지정하며 나머지 테이블의 ID는 AUTO_INCREMENT다. 브랜드·상품명과 주문 상품명 스냅샷은 VARCHAR(100)이고 이름에 유일 제약을 추가하지 않는다.
 
@@ -106,6 +124,6 @@ SELECT id, point_balance FROM `user` ORDER BY id;
   --console=plain -q
 ```
 
-전체 스키마 테스트는 전용 임시 MySQL 컨테이너에서 `001`~`007` 수동 SQL을 먼저 적용하고, 커머스 6개 엔티티를 Hibernate `validate`로만 검사한다. Hibernate 자동 생성 없이 관계 전체를 저장·조회하며 FK·복합 유일·CHECK·NOT NULL·Unicode·시각·인덱스·재실행 보존을 확인한다. `007`의 컬럼 순서·ASC/DESC와 기존 데이터·인덱스 보존은 별도 assertion으로 확인하며, Hibernate `validate`만으로 인덱스까지 검증한다고 간주하지 않는다. 기존 브랜드 전용 테스트와 컨테이너도 분리하며 로컬·운영 DB의 데이터를 정리하지 않는다.
+전체 스키마 테스트는 전용 임시 MySQL 컨테이너에서 `001`~`008` 수동 SQL을 먼저 적용하고, 업무 6개와 버전 메타데이터 엔티티를 Hibernate `validate`로 검사한다. 기존 FK·유일·수치·Unicode·시각 검사에 singleton·비음수 버전과 기존 데이터 보존을 추가한다. DDL 재실행 실패가 기존 버전 42를 0으로 초기화하지 않는지도 확인한다. `007` 인덱스는 별도 assertion으로 검사하며 Hibernate `validate`만으로 인덱스까지 검증한다고 간주하지 않는다. 테스트 소유 DB만 사용한다.
 
 API-13의 저장 데이터 손상 방어 테스트는 Hibernate가 생성한 테스트 스키마에 수량 0을 직접 준비해 서버의 500 처리·무차감 상태 보존을 확인한다. 실제 운영 SQL의 CHECK(quantity > 0)는 그 직접 UPDATE부터 거절한다. 두 테스트의 저장소 준비 방식과 검증 책임을 구분하며, 운영 제약을 완화해서 손상 fixture를 허용하지 않는다. 실제 Red·Green 결과와 수치는 [전체 스키마 기록](commerce-tdd-schema-log.md)에 남긴다.

@@ -1,6 +1,8 @@
 # W4 1단계: 상품 목록 SQL·인덱스 개선
 
-대상은 기존 `GET /api/v1/products`의 고객 가격순·최신순 조회다. Controller·API 계약·업무 모델·변경 트랜잭션과 락은 유지한다. Redis와 로컬 캐시는 이번 단계에 추가하지 않는다. [개선 전 기준선](product-query-baseline.md)의 동일 seed와 고정 요청으로 비교한다.
+이 문서는 2026-10-15 SQL·인덱스 개선 단계의 기록이다. 대상은 기존 `GET /api/v1/products`의 고객 가격순·최신순 조회이며, Controller·API 계약·업무 모델·변경 트랜잭션과 락은 유지했다. Redis와 로컬 캐시는 이 단계에 추가하지 않았다. [개선 전 기준선](product-query-baseline.md)의 동일 seed와 고정 요청으로 비교했다.
+
+아래 수치와 후보 선택은 당시 기록으로 보존한다. 이후 무필터 최신순·가격순은 [페이지 한정 집계](global-list-query-optimization.md), 무필터 좋아요순은 [좁은 순위 집계](product-like-ranking-tdd-log.md)로 추가 개선했고, 선택한 좋아요순 첫 페이지의 [Redis 구현·검증](product-list-cache-tdd-log.md)도 진행했다. 현재 전체 상태는 [완료 체크리스트](../week2/commerce-completion-checklist.md)를 따른다.
 
 ## 테스트 우선 순서
 
@@ -18,13 +20,13 @@
 - C: 고객 가격순·최신순의 projection에서 좋아요를 상관 count 서브쿼리로 조회하고 전체 like join·group 제거. 기존 인덱스 유지.
 - D: C와 후보 인덱스 조합.
 
-좋아요순·관리자 목록·내 좋아요·상세 조회는 기존 집계 쿼리를 유지한다. C는 Hibernate HQL의 select 서브쿼리를 사용한다. 좋아요 0개는 count 0으로 반환하고 상품·브랜드·좋아요는 같은 목록 SQL에서 읽는다. 실제 DB가 서브쿼리를 몇 번 평가하는지는 실행 계획으로 확인하며, SQL 문법만으로 반환 20개에 한정된다고 가정하지 않는다.
+이 단계에서 좋아요순·관리자 목록·내 좋아요·상세 조회는 기존 집계 쿼리를 유지했다. C는 Hibernate HQL의 select 서브쿼리를 사용한다. 좋아요 0개는 count 0으로 반환하고 상품·브랜드·좋아요는 같은 목록 SQL에서 읽는다. 실제 DB가 서브쿼리를 몇 번 평가하는지는 실행 계획으로 확인하며, SQL 문법만으로 반환 20개에 한정된다고 가정하지 않는다.
 
-페이지 상품과 좋아요 일괄 집계를 별도 SQL로 나누는 대안도 가능하다. C가 충분한 개선을 보이면 그 대안은 추가하지 않는다. 별도 SQL의 네트워크 왕복·ID 순서 복원·읽기 시점 조립을 늘리지 않기 위해서다.
+페이지 상품과 좋아요 일괄 집계를 별도 SQL로 나누는 대안도 검토했다. 당시 고정 브랜드 요청에서 C가 충분한 개선을 보여 그 대안은 추가하지 않았다. 별도 SQL의 네트워크 왕복·ID 순서 복원·읽기 시점 조립을 늘리지 않기 위해서다. 무필터 요청에서 추가 병목을 확인한 뒤 적용한 분리 조회는 위의 페이지 한정 집계 기록과 구분한다.
 
-**D를 채택했다.** 기존 Controller → application → domain 저장소 약속 → infrastructure 의존을 유지한다. 생산 Java 변경은 `ProductQueryRepositoryImpl` 한 파일이며, 인덱스는 [007 추가 SQL](../../apps/commerce-api/src/main/resources/db/schema/007-product-brand-price-index.sql)로 제공한다. 001~006과 기존 인덱스는 삭제·교체하지 않는다. 기존 DB에는 007만 별도로 적용하며 [운영 안내](../week2/commerce-schema-operations.md)를 따른다.
+**D를 채택했다.** 기존 Controller → application → domain 저장소 약속 → infrastructure 의존을 유지한다. 이 단계의 생산 Java 변경은 `ProductQueryRepositoryImpl` 한 파일이며, 인덱스는 [007 추가 SQL](../../apps/commerce-api/src/main/resources/db/schema/007-product-brand-price-index.sql)로 제공한다. 001~006과 기존 인덱스는 삭제·교체하지 않는다. 이 인덱스 증분은 기존 DB에 007만 별도로 적용하며, 후속 스키마를 포함한 현재 적용 순서는 [운영 안내](../week2/commerce-schema-operations.md)를 따른다.
 
-읽기 서비스와 저장소의 `@Transactional(readOnly = true)`를 유지했다. 상품·브랜드·좋아요 값은 한 목록 SQL에서 읽고 기존 전체 개수 쿼리는 별도로 유지한다. 새로운 DB 락·변경 트랜잭션·별도 좋아요 조회를 추가하지 않는다. readOnly 자체가 격리 수준을 정하는 것은 아니며 count와 목록 사이의 일관성은 기존 실행 환경의 격리 설정을 따른다. 삭제와 겹친 조회의 새 정책을 임의로 확정하지 않는다.
+이 단계에서는 읽기 서비스와 저장소의 `@Transactional(readOnly = true)`를 유지했다. 상품·브랜드·좋아요 값은 한 목록 SQL에서 읽고 기존 전체 개수 쿼리는 별도로 유지했으며, 새로운 DB 락·변경 트랜잭션·별도 좋아요 조회는 추가하지 않았다. readOnly 자체가 격리 수준을 정하는 것은 아니며 count와 목록 사이의 일관성은 기존 실행 환경의 격리 설정을 따른다. 삭제와 겹친 조회의 새 정책도 이 단계에서 임의로 확정하지 않았다.
 
 ## 실제 전후 비교
 
@@ -79,4 +81,4 @@ W4_QUERY_LABEL=after W4_COMPARE_BRAND_PRICE_INDEX=true \
 - 21:23 KST 최종 전체 검사: `./gradlew :apps:commerce-api:check --rerun-tasks --console=plain` **BUILD SUCCESSFUL·종료 코드 0**. **62개 스위트·559개 테스트, 실패·오류·skip 0**. ArchUnit 포함, Checkstyle XML 11개 위반 0. 기존 계약·검사 규칙을 삭제하거나 완화하지 않았다.
 - 최종 001~007 스키마의 기본 실행에서도 상품 20행·좋아요 lookup 20 loops·정렬 제거를 재확인했다. 세션 기본 격리 조회 결과는 REPEATABLE-READ, HTTP p50 3.721ms·p95 4.190ms였다. 이는 별도 전체 검사 프로세스 안의 재검증이며 위 A/B/C/D 비교 표에 섞어 향상률을 계산하지 않는다.
 
-이번 단계로 SQL·인덱스 개선을 완료했다. 캐시 대상·payload·TTL·정상 변경·장애 복구 정책과 Redis TDD는 다음 단계이며, W4 전체 완료 또는 PR 제출 완료로 표시하지 않는다.
+이 단계로 SQL·인덱스 개선을 완료했다. 당시 다음 작업으로 남겼던 캐시 대상·payload·TTL·정상 변경·장애 복구 정책과 Redis TDD는 이후 [캐시 구현·검증 기록](product-list-cache-tdd-log.md)으로 이어졌다. 이 문서의 과거 검사 결과만으로 현재 W4 전체 완료나 PR 제출 완료를 대신하지 않으며, 현재 상태는 위의 완료 체크리스트에서 구분한다.
