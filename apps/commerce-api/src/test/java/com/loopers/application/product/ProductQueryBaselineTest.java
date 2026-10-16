@@ -62,7 +62,8 @@ import static org.mockito.Mockito.doAnswer;
 /** 기존 API와 수동 DDL을 사용하는 캐시 없는 W4 전후 비교 측정이다. */
 @SpringBootTest(classes = CommerceApiApplication.class,
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-    properties = {"spring.jpa.hibernate.ddl-auto=none", "spring.jpa.show-sql=false"})
+    properties = {"spring.jpa.hibernate.ddl-auto=none", "spring.jpa.show-sql=false",
+        "commerce.product-list-cache.enabled=false"})
 @TypeExcludeFilters(ProductQueryBaselineTest.ContainerExclusion.class)
 @Testcontainers
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -215,6 +216,44 @@ class ProductQueryBaselineTest {
         }
         assertResponse(response, expected);
         return queries;
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {1, 20, 100})
+    void ranksUsingOnlyProductIdsAndCountsThenLoadsOnlyTheSelectedDetails(int size) {
+        for (int page : List.of(0, 1, (9812 - 1) / size)) {
+            JsonNode expected = expectedPage(null, "likes_desc", page, size);
+            List<JdbcReadProbe.Query> queries = observePage("likes_desc", page, size, expected);
+            assertThat(queries).as("count + 전체 후보의 좁은 순위 집계 + 선정 ID 상세").hasSize(3);
+            assertThat(queries.getFirst().sql()).startsWith("select count(").doesNotContain("`like`");
+            JdbcReadProbe.Query ranking = queries.get(1);
+            String projection = ranking.sql().substring(0, ranking.sql().indexOf(" from "));
+            assertThat(projection).matches("select \\w+\\.id,count\\(\\w+\\.id\\)");
+            String group = ranking.sql().split(" group by ")[1].split(" order by ")[0];
+            assertThat(group).matches("\\w+\\.id");
+            assertThat(ranking.sql()).contains("left join `like`", "deleted_at is null", "order by count(", " limit ");
+            JdbcReadProbe.Query details = queries.get(2);
+            assertThat(details.sql()).contains(" in (", "deleted_at is null")
+                .doesNotContain("`like`", " group by ", " limit ");
+            List<Long> selectedIds = new ArrayList<>();
+            expected.path("items").forEach(item -> selectedIds.add(item.path("productId").asLong()));
+            assertThat(details.parameters()).extracting(value -> ((Number) value).longValue())
+                .containsExactlyInAnyOrderElementsOf(selectedIds);
+            assertThat(selectedIds).doesNotHaveDuplicates();
+            queries.forEach(this::assertBindingsCaptured);
+        }
+    }
+
+    @Test
+    void skipsRankingAndDetailsForOutOfRangeLikesPages() {
+        for (int page : List.of(491, Integer.MAX_VALUE)) {
+            JsonNode expected = expectedPage(null, "likes_desc", page, 20);
+            assertThat(expected.path("items")).isEmpty();
+            assertThat(expected.path("totalElements").asInt()).isEqualTo(9812);
+            var queries = observePage("likes_desc", page, 20, expected);
+            assertThat(queries).hasSize(1);
+            assertThat(queries.getFirst().sql()).startsWith("select count(").doesNotContain("`like`");
+        }
     }
 
     private void compareListAndDetailReadCosts() throws IOException {

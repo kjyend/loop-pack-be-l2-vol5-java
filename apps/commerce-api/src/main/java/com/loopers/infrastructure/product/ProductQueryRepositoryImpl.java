@@ -13,6 +13,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 
 @Repository
@@ -70,6 +71,9 @@ public class ProductQueryRepositoryImpl implements ProductQueryRepository {
             case PRICE_ASC -> "p.price asc, p.id desc";
             case LIKES_DESC -> "count(l.id) desc, p.id desc";
         };
+        if (!includeDeleted && brandId == null && sort == ProductSort.LIKES_DESC) {
+            return readGlobalLikesPage(page, size);
+        }
         if (!includeDeleted && sort != ProductSort.LIKES_DESC) {
             String from = PRODUCT_FROM + " where " + predicate;
             if (brandId == null) {
@@ -129,6 +133,34 @@ public class ProductQueryRepositoryImpl implements ProductQueryRepository {
         // 집계 SQL의 반환 순서와 무관하게 원래 페이지 순서를 보존하며, 좋아요 관계가 없으면 0이다.
         List<ProductSummary> items = rows.stream()
             .map(row -> row.toSummary(likesByProduct.getOrDefault(row.productId(), 0L))).toList();
+        return PageResult.of(items, page, size, total);
+    }
+
+    private PageResult<ProductSummary> readGlobalLikesPage(int page, int size) {
+        String where = " where " + ACTIVE;
+        long total = query("select count(p.id)" + PRODUCT_FROM + where, Long.class, Map.of()).getSingleResult();
+        long offset = (long) page * size;
+        if (offset >= total) {
+            return PageResult.of(List.of(), page, size, total);
+        }
+        // 상세 필드를 집계에 싣지 않고 ID와 좋아요 수만으로 순위·페이지를 확정한다.
+        List<Tuple> ranks = query("select p.id as productId, count(l.id) as likeCount"
+            + PRODUCT_FROM + LIKE_JOIN + where + " group by p.id order by count(l.id) desc, p.id desc",
+            Tuple.class, Map.of()).setFirstResult(Math.toIntExact(offset)).setMaxResults(size).getResultList();
+        if (ranks.isEmpty()) {
+            return PageResult.of(List.of(), page, size, total);
+        }
+        List<Long> ids = ranks.stream().map(rank -> rank.get("productId", Long.class)).toList();
+        List<ProductPageRow> rows = query(GLOBAL_PAGE_PROJECTION + PRODUCT_FROM + where + " and p.id in :productIds",
+            ProductPageRow.class, Map.of("productIds", ids)).getResultList();
+        Map<Long, ProductPageRow> rowsById = new HashMap<>();
+        rows.forEach(row -> rowsById.put(row.productId(), row));
+        // IN 조회 순서는 보장되지 않으므로 순위 결과 순서로 조립하고, 같은 스냅샷에서 얻은 집계값을 사용한다.
+        List<ProductSummary> items = ranks.stream().map(rank -> {
+            ProductPageRow row = Objects.requireNonNull(rowsById.get(rank.get("productId", Long.class)),
+                "Ranked product is missing from the same read snapshot");
+            return row.toSummary(rank.get("likeCount", Long.class));
+        }).toList();
         return PageResult.of(items, page, size, total);
     }
 

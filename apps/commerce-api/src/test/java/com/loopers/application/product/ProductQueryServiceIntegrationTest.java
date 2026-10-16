@@ -24,6 +24,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -166,7 +167,7 @@ class ProductQueryServiceIntegrationTest {
     }
 
     @ParameterizedTest
-    @EnumSource(value = ProductSort.class, names = {"LATEST", "PRICE_ASC"})
+    @EnumSource(value = ProductSort.class, names = {"LATEST", "PRICE_ASC", "LIKES_DESC"})
     void preservesGlobalPagesAcrossBrandsWhileExcludingDeletedCandidatesBeforePaging(ProductSort sort) {
         LocalDateTime timestamp = LocalDateTime.of(2026, 1, 2, 0, 0);
         LocalDateTime newer = timestamp.plusDays(1);
@@ -193,6 +194,10 @@ class ProductQueryServiceIntegrationTest {
             newer, newer, newer, deleted.getId());
         addLike(1, deleted.getId(), timestamp);
         Collections.reverse(expected);
+        if (sort == ProductSort.LIKES_DESC) {
+            expected.sort(Comparator.comparingLong(ProductInfo::likeCount).reversed()
+                .thenComparing(ProductInfo::productId, Comparator.reverseOrder()));
+        }
 
         var first = queryService.getList(null, 0, 20, sort);
         var last = queryService.getList(null, 1, 20, sort);
@@ -241,7 +246,7 @@ class ProductQueryServiceIntegrationTest {
     }
 
     @ParameterizedTest
-    @EnumSource(value = ProductSort.class, names = {"LATEST", "PRICE_ASC"})
+    @EnumSource(value = ProductSort.class, names = {"LATEST", "PRICE_ASC", "LIKES_DESC"})
     void returnsAnEmptyGlobalPageWithoutChangingRowsWhenAllProductsAreHidden(ProductSort sort) {
         jdbc.update("UPDATE brand SET deleted_at = ? WHERE id = ?",
             LocalDateTime.of(2026, 1, 2, 0, 0), brand.getId());
