@@ -18,6 +18,18 @@
 | [W5 과제 원문](docs/week5/assignment-original.md) | 2026-10-18 제공된 구현·검증·제출 요구 원문 보존 |
 | [W5 학습 자료 원문](docs/week5/learning-original.md) | 외부 결과의 불확실성·멱등성·트랜잭션·회복 전략의 개념 근거 |
 | [W5 예약 상태 TDD 실행 기록](docs/week5/order-reservation-state-tdd-log.md) | 예약 상태 전이 12개 조합의 첫 Red·Green·Refactor 증거. 순수 enum만 구현했으며 영속화·실제 재고·PG·동시성은 미완료 |
+| [W5 결제 시도 상태 TDD 실행 기록](docs/week5/payment-attempt-state-tdd-log.md) | PaymentAttempt 순수 모델의 발송·관찰·종결 보존·입력 경계 81개 및 당시 관련 회귀 151개 검증. 이후 DB 연결은 다음 기록 참조 |
+| [W5 주문·예약·DB 연결 TDD 실행 기록](docs/week5/order-payment-persistence-tdd-log.md) | 주문 상태·결제수단 null 경계, 품목 예약·시도 JPA, 009/010 이행·POINT 보존·실제 저장 뒤 롤백 검증. 실제 재고 효과·서비스 TX A/B·PG 연결은 후속 범위 |
+| [W5 로컬 테스트 PG·HTTP TDD 실행 기록](docs/week5/local-test-pg-http-tdd-log.md) | JDK HTTP fixture·Apache HttpClient의 실제 생성/조회 계약, 엄격한 422·응답 유실·자동 재시도 금지·개별 timeout·자원 정리 검증. 당시 주문·재고·TX A/B·callback 연결과 HMAC 선택은 미포함. 후속 HMAC 계산 단위 구현·DB/API 미연결 상태는 정책 문서와 HMAC 기록 참조. 과제 해석 질문은 필요 시 선택적으로 확인하며 담당자 확인·승인은 구현의 필수 전제가 아님 |
+| [W5 재고 확보·반환 TDD 실행 기록](docs/week5/order-stock-reservation-tdd-log.md) | 내부 신규 준비 TX A·결과 적용 TX B, 실제 재고·HELD·삭제 후 반환·관리자 반환 여유·목록 버전의 연결 증분. 실제 검사 상태와 PG HTTP/고객 confirm 미연결 범위를 구분 |
+| [W5 PG HTTP·주문·재고 연결 TDD 실행 기록](docs/week5/order-payment-http-connection-tdd-log.md) | 내부 신규 startNew·단건 refreshOnce의 실제 HTTP와 TX A/B 연결, 외부 TX 거절·예약/거래 수·롤백·복구 검증. 고객 confirm/reconcile·callback·180초 제한 조회·회로는 후속. 당시 미완료였던 HMAC 계산·지문 저장은 아래 후속 기록 참조. 과제 해석 질문은 필요 시 선택적으로 확인하며 담당자 확인·승인은 구현의 필수 전제가 아님 |
+| [W5 HMAC 계산·비교 TDD 실행 기록](docs/week5/payment-request-fingerprint-tdd-log.md) | canonical v1·HMAC-SHA256·전체 지문 비교의 순수 단위 54개, 관련 회귀·ArchUnit 포함 343개와 Checkstyle main/test 검증. 당시 지문 DB 저장·키 설정·TX A·고객 API는 미연결 |
+| [W5 HMAC 지문·버전 저장 TDD 실행 기록](docs/week5/payment-request-fingerprint-persistence-tdd-log.md) | PaymentAttempt 불변 지문·두 버전, 011 추가 이행·기존 PG 전체 NULL과 POINT 보존, 전용 MySQL 저장·유일 제약 경합·실제 SQL 후 rollback. 사용자 DB 미접근·미적용. 당시 후속이었던 키 공급·내부 서비스 연결은 다음 기록 참조, 고객 HTTP 연결은 미완료 |
+| [W5 HMAC 환경변수 키 설정 TDD 실행 기록](docs/week5/payment-fingerprint-key-configuration-tdd-log.md) | 환경변수 현재/과거 키 공급·버전 선택·Spring bean, 잘못된 설정의 비교 불가·비노출. DB 없는 신규 92개와 관련 회귀·ArchUnit·Checkstyle 검증. 당시 실제 비밀키 설정·DB 이행·서비스 TX A·고객 API 연결은 미수행 |
+| [W5 HMAC 주문 처리 연결 TDD 실행 기록](docs/week5/order-payment-fingerprint-connection-tdd-log.md) | 신규 TX A 지문 공동 저장·동일 재요청 비교·전역 UUID 충돌·실제 SQL 후 rollback·키 불가와 카드 없는 복구. Testcontainers/로컬 HTTP의 신규 44개·관련 798개·ArchUnit·Checkstyle 통과. 사용자 DB·실제 키 미변경, 고객 PG HTTP·callback·시간/회로는 후속 |
+| [W5 고객 결제 계약 TDD 기록](docs/week5/customer-payment-contract-tdd-log.md) | 사용자 선택 JSON·오류3종·PG 주문 ID의 DB 없는 경계 구현. 신규126개·관련522개·ArchUnit·Checkstyle 통과. 실제 고객 controller PG 전환·조회 서비스·180초/회로·callback/reconcile은 후속 |
+| [W5 고객 PG API·제한 조회 TDD 기록](docs/week5/customer-payment-api-tdd-log.md) | 고객 confirm·고객/관리자 조회의 PG 연결, 요청 진입 기준 제한 조회와 Resilience4j 조회 회로, 신규 PG 포인트 차감 0·과거 POINT 보존. callback/reconcile HTTP와 실제 180초 하드 상한 검증은 후속이며 사용자 DB는 접근하지 않음 |
+| [W5 재확인·callback HTTP TDD 기록](docs/week5/payment-recovery-api-tdd-log.md) | 위임받은 복구 계약 선택·두 HTTP 진입점·권위 조회·공통 TX B·중복/경합/실패 후 복구의 최신 증거. 선행 전체 검사와 이번 관련 검사 범위를 구분하며 사용자 DB는 접근하지 않음 |
 | [W4 채점 기준](docs/week4/grading-criteria.md) | 이전 주 상품 조회·인덱스·Redis 캐시 과제의 8개 평가 항목과 회귀 참고 |
 | [W4 과제 원문](docs/week4/assignment-original.md) | 2026-10-12 제공된 채점 기준 원문 보존 |
 | [전체 설계](docs/week2/commerce-erd-draft.md) | 확정 업무 규칙, 버드뷰, 계층 의존, ERD·도메인 책임, 세 대표 흐름 |
