@@ -59,7 +59,7 @@ API producer에만 `spring-kafka`를 연결하며 기존 streamer batch factory�
 | 실제 listener·offset | 정상/중복은 DB 완료 뒤 ack. 저장 실패는 실제 error handler로 중단·offset 미진행, 같은 group 재시작으로 같은 record 재처리·저장·ack. mock ack 검사는 이 실험을 대신하지 않음 |
 | 실행 설정·자원 | 전용 record factory의 실효 auto commit/ack·동기 commit·fetch, 동일 bootstrap·local ddl validate 확인. streamer 자체 ArchUnit·Checkstyle, 유한 대기와 소유한 자원 정리 |
 
-이 소비 증분의 DB 실패 후 재시작은 C07이다. **DB 저장은 성공했지만 ack 전에 종료되는 C05**는 [후속 재전달 TDD 기록](../week6/purchase-activity-offset-redelivery-tdd-log.md)에서 별도로 검증했다. 실제 parser·handler의 APPLIED 뒤 첫 consumer를 닫고 같은 broker/topic/group/DB의 새 consumer가 seek/reset 없이 같은 record를 받는다. DUPLICATE 뒤 두 테이블의 PK·전체 필드가 그대로이며 실제 committed offset은 n→n→n+1이다. 첫 배정 poll이 메시지를 받아 버리지 않도록 pause 후 준비하고, 새 물리 JDBC 연결로 commit된 결과를 확인한다. 생산 코드는 변경하지 않았다. 당시 후속이었던 Kafka 배정·정상 PG→streamer 전체 경로·발행 누락의 소비 DB 대조·고정 Clock 재현은 아래 증분으로 검증했다. C09의 실제 W6 구현 commit 해시 연결은 커밋 금지로 남아 있다.
+이 소비 증분의 DB 실패 후 재시작은 C07이다. **DB 저장은 성공했지만 ack 전에 종료되는 C05**는 [후속 재전달 TDD 기록](../week6/purchase-activity-offset-redelivery-tdd-log.md)에서 별도로 검증했다. 실제 parser·handler의 APPLIED 뒤 첫 consumer를 닫고 같은 broker/topic/group/DB의 새 consumer가 seek/reset 없이 같은 record를 받는다. DUPLICATE 뒤 두 테이블의 PK·전체 필드가 그대로이며 실제 committed offset은 n→n→n+1이다. 첫 배정 poll이 메시지를 받아 버리지 않도록 pause 후 준비하고, 새 물리 JDBC 연결로 commit된 결과를 확인한다. 생산 코드는 변경하지 않았다. 당시 후속이었던 Kafka 배정·정상 PG→streamer 전체 경로·발행 누락의 소비 DB 대조·고정 Clock 재현은 아래 증분으로 검증했다. 당시 커밋 금지로 남았던 C09의 실제 W6 구현 commit 연결은 [2026-10-30 재검증](../week6/fixed-clock-w7-reproduction.md#2026-10-30-c09-revision-연결과-재검증)으로 완료했다.
 
 ### Kafka 배정·key 매핑 검증 증분
 
@@ -102,7 +102,7 @@ C08의 통제된 send 직전 누락을 검증했으며, 일반 send 오류나 OS
 | 기존 전달 경계 | 정상 완료/활동·ack, 누락 대상 record/완료/활동 0과 추가 PG 생성/발행 0 등 기존 기대값 유지 |
 | 시계 적용 범위 | 저장용 전용 Clock만 주입. PG timeout·대기 예산·회로·단조 시간·JPA 감사 시각·로그·Kafka 시계와 TX·락 유지 |
 
-고정 Clock·두 사례의 재현 코드/명령·실제 사건 값은 준비했다. C09에서 남은 실제 W6 구현 commit 해시는 사용자 커밋 금지 요청으로 아직 없으며, 기존 HEAD를 구현 완료 revision으로 표시하지 않는다. C11 최종 정합성 대조와 제출은 후속이다.
+고정 Clock·두 사례의 재현 코드/명령·실제 사건 값을 준비한 뒤, 2026-10-30 기존 W6 구현 commit `dd86f49a9edf7a7ccdfc672be3f708f0f4a3ddd1`을 연결했다. 실행 HEAD와 구현·테스트·실행 설정이 동일함을 확인하고 두 사례 E2E 1개를 다시 실행했다(실패·오류·skip 0). [C09 재검증 기록](../week6/fixed-clock-w7-reproduction.md#2026-10-30-c09-revision-연결과-재검증)에 새 사건 값·명령·정리를 남겨 인계를 완료했다. 선행 미커밋 실행과 이번 실행의 증거는 구분하며, C11 최종 정합성 대조와 제출은 후속이다.
 
 ### 연결 경계별 검증과 남은 실험
 

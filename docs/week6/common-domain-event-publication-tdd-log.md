@@ -120,7 +120,7 @@ API 13개 스위트·306개, streamer 2개 스위트·53개다. 전체 저장소
 
 API DB는 기존 MySqlTestContainersConfig가 만든 임시 MySQL이다. 테스트가 설정한 JDBC 주소·계정으로만 접근한다. 실제 Kafka 검증은 소유한 Kafka container와 UUID topic/group을 사용하며, 전체 흐름은 별도 streamer MySQL·자식 JVM을 사용한다. 자식 JVM 종료 확인·consumer/admin/PG 종료·컨테이너 정리를 기존 fixture로 유지했다. 실행 전후 Docker 컨테이너 ID 목록이 같아 추가 실행 자원이 남지 않았음을 확인했다.
 
-이번 변경에 DB 스키마/이행 작업은 없다. 사용자 DB·기존 topic/group·볼륨을 변경하지 않았다. 작업은 기존 W6 미커밋 변경 위에서 수행했으며 커밋하지 않았다. [W7 재현 안내](fixed-clock-w7-reproduction.md)의 실제 W6 구현 commit 해시 연결과 최종 제출 정리는 여전히 별도 후속 작업이다.
+이번 변경에 DB 스키마/이행 작업은 없다. 사용자 DB·기존 topic/group·볼륨을 변경하지 않았다. 작업은 기존 W6 미커밋 변경 위에서 수행했으며 커밋하지 않았다. 당시 후속이었던 실제 W6 구현 commit 연결은 [2026-10-30 C09 재검증](fixed-clock-w7-reproduction.md#2026-10-30-c09-revision-연결과-재검증)에서 완료했다. 이 절의 미커밋 사실·359개 검사는 당시 기록으로 보존하며 최종 제출 정리는 별도다.
 
 ## 후속 설명·문서 점검
 

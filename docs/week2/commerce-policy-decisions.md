@@ -108,7 +108,7 @@ API는 `spring-kafka`에 직접 의존하는 전용 typed producer 설정을 사
 
 생산자와 소비자 검증에는 각각 소유한 Testcontainers `apache/kafka:3.8.1` 한 대, 고유 이름의 2-partition topic과 검사 group을 사용한다. producer·admin·검사 consumer에 같은 fixture bootstrap을 주입하고 유한 poll/close 뒤 자신의 자원만 종료한다. 사용자 DB·기존 broker·다른 실행의 topic/group·볼륨은 건드리지 않는다. 이는 승인한 실제 Kafka TDD를 위한 격리 방식이며 기존 공유 Kafka 설정을 전역 변경하는 결정이 아니다.
 
-직접 실행한 공유 로컬 broker를 재사용하는 대안은 자원 충돌과 테스트 결과 오염을 피하려고 채택하지 않는다. 선행 발행 검사 consumer의 직접 assignment/seek는 새 발행을 관찰하기 위한 것이며 공식 재전달·group 배정 실험을 대신하지 않는다. 이후 C05는 [별도 재전달 실험](../week6/purchase-activity-offset-redelivery-tdd-log.md)으로 검증했다. 첫 consumer만 target offset n을 commit/seek하고 DB commit 뒤 n+1 미커밋 상태로 종료하며, 새 consumer는 같은 group의 저장 offset에서 seek/reset 없이 읽는다. 실제 parser·handler와 PK 포함 DB snapshot·admin committed offset으로 동일 record 두 번 전달·업무 효과 불변을 확인했다. 이는 통제된 consumer 종료이며 OS 강제 종료나 모든 장애를 재현했다는 뜻은 아니다. 당시 후속이었던 누락 사례의 소비 DB 대조는 아래 C08 실험으로 검증했다. W7 두 사례의 고정 Clock·재현 준비는 아래 증분으로 완료했고, 실행 코드를 담은 실제 W6 commit 해시 연결은 커밋 금지로 남긴다.
+직접 실행한 공유 로컬 broker를 재사용하는 대안은 자원 충돌과 테스트 결과 오염을 피하려고 채택하지 않는다. 선행 발행 검사 consumer의 직접 assignment/seek는 새 발행을 관찰하기 위한 것이며 공식 재전달·group 배정 실험을 대신하지 않는다. 이후 C05는 [별도 재전달 실험](../week6/purchase-activity-offset-redelivery-tdd-log.md)으로 검증했다. 첫 consumer만 target offset n을 commit/seek하고 DB commit 뒤 n+1 미커밋 상태로 종료하며, 새 consumer는 같은 group의 저장 offset에서 seek/reset 없이 읽는다. 실제 parser·handler와 PK 포함 DB snapshot·admin committed offset으로 동일 record 두 번 전달·업무 효과 불변을 확인했다. 이는 통제된 consumer 종료이며 OS 강제 종료나 모든 장애를 재현했다는 뜻은 아니다. 당시 후속이었던 누락 사례의 소비 DB 대조는 아래 C08 실험으로 검증했다. W7 두 사례의 고정 Clock·재현 준비와 실제 W6 구현 commit 해시 연결은 아래 C09 기록으로 완료했다.
 
 C04의 partition/group 배정과 key 매핑은 [DB 없는 별도 probe 실험](../week6/kafka-group-assignment-tdd-log.md)으로 검증했다. 각 consumer는 단일 worker에서 계속 poll하며, broker의 STABLE/member 배정과 worker의 같은 generation·배정이 연속 일치하고 poll이 진행되는 것을 안정화 조건으로 둔다. 매 단계에서 두 partition에 명시적으로 보낸 probe의 실제 담당 worker·위치·내용·commit을 확인한다. key 실험에서는 partition을 지정하지 않고 같은 직렬화/key의 metadata를 비교하며 다른 key가 반드시 다른 partition이라는 조건은 두지 않는다. 전용 Kafka만 사용해 가짜 구매 활동을 만들지 않고 운영 concurrency/timeout은 변경하지 않는다. `acks=all`·복제 계수 1의 단일 broker 실험으로 다중 broker 복제 장애 내구성을 증명하지 않는다.
 
@@ -118,13 +118,13 @@ C08은 [commit 뒤 발행 누락 전체 흐름 실험](../week6/pre-send-failure
 
 주문 결제의 저장 시각은 전용 `orderPaymentClock`을 생성자로 주입한다. 운영은 `Clock.systemUTC()`를 사용하고 재현 테스트만 `2026-10-29T00:00:00.123456Z`의 UTC `Clock.fixed`로 바꾼다. 적용 범위는 결제 시도의 발송 시작과 PG 주문 최초 확정 시각 두 곳이다. 정상 소비·누락 사례 모두 같은 고정 시각을 저장하고 이벤트·구매 활동에는 저장된 최초 확정 시각을 전달한다. 전역 시계나 PG 대기/회로 시계를 고정하는 대안은 채택하지 않는다. 저장 사실의 재현과 경과 시간 제한을 분리하기 위해 단조 시간·timeout·회로·JPA 감사 시각·로그·Kafka 시계는 유지한다. TX·락·최초 확정 보존 규칙도 바꾸지 않는다.
 
-[고정 Clock·W7 재현 가이드](../week6/fixed-clock-w7-reproduction.md)에 재현 코드·명령·실제 두 사례·정리 방법과 검사 범위를 남겼다. 현재 실행은 미커밋 작업 트리에서 수행했으며, 기존 W6 작업 전 HEAD를 구현이 포함된 revision으로 표시하지 않는다. 사용자 요청에 따라 커밋하지 않고 실제 W6 구현 commit 해시 연결만 C09의 남은 항목으로 둔다.
+[고정 Clock·W7 재현 가이드](../week6/fixed-clock-w7-reproduction.md)에 재현 코드·명령·실제 두 사례·정리 방법과 검사 범위를 남겼다. 선행 실행 당시에는 사용자 요청으로 커밋하지 않았고 W6 작업 전 HEAD를 구현 revision으로 사용하지 않았다. 2026-10-30에는 이미 존재하는 W6 구현 commit `dd86f49a9edf7a7ccdfc672be3f708f0f4a3ddd1`을 연결하고 동일 코드의 두 사례 E2E를 다시 실행해 C09를 완료했다. 새 코드 commit 없이 기존 commit을 재사용하며, 최신 사건 사실·실행 HEAD·명령·자원 정리는 [C09 재검증 기록](../week6/fixed-clock-w7-reproduction.md#2026-10-30-c09-revision-연결과-재검증)을 따른다.
 
-### 남은 검증·인계
+### 검증·인계 상태
 
 | ID | 후속 작업 | 고정된 기준 |
 | --- | --- | --- |
-| W6-Q06 · 후속 부분 | 실제 W6 구현 commit 해시 연결 | 고정 Clock·정상/누락 재현 코드·명령·실제 사건 값·자원 정리는 준비 완료. 커밋 금지이므로 현재 HEAD를 완료 revision으로 쓰지 않고 실제 구현 commit 해시 연결만 남김 |
+| W6-Q06 · 인계 완료 | 실제 W6 구현 commit 해시 연결 | 고정 Clock·정상/누락 재현 코드·명령·사건 값·자원 정리와 기존 구현 `dd86f49`·동일 코드 재실행을 [C09 기록](../week6/fixed-clock-w7-reproduction.md#2026-10-30-c09-revision-연결과-재검증)에 연결. C11 최종 대조·제출과 구분 |
 
 생산자 모델은 API 앱 안에 두며 streamer가 API 앱 클래스에 의존하지 않는다. streamer에는 독립적인 수신 모델·엄격한 JSON parser·key/orderId 검증과 저장 사실 비교를 구현했다. 생산자의 결정적 ID 형식을 소비자에 강제하지 않아 다른 eventId 충돌도 검출한다. 미정 선택은 구현 전에 질문하며 이미 선택한 Q01~05를 다시 승인받지 않는다.
 
